@@ -114,7 +114,7 @@ app.post('/login', async (req, res) => {
       });
     } else {
       console.log(
-        `Login fallido para idInspector: ${idInspector} - Credenciales incorrectas.`
+        `Login fallido para idInspector: ${idInspector} - Credenciales incorrectas.`,
       );
       return res.status(401).json({
         success: false,
@@ -126,11 +126,11 @@ app.post('/login', async (req, res) => {
     if (error.response) {
       console.error(
         'Respuesta SQLite Cloud status (login):',
-        error.response.status
+        error.response.status,
       );
       console.error(
         'Respuesta SQLite Cloud data (login):',
-        error.response.data
+        error.response.data,
       );
     }
     return res.status(500).json({
@@ -155,52 +155,29 @@ app.post('/sync-report', async (req, res) => {
     const cantidad = Number(report.cantidad) || 0;
     const falta = report.falta ?? 'N/A';
 
-    // 1) INSERT + SELECT last_insert_rowid() en la misma llamada
-    const sqlInsertAndGetId = `
-      BEGIN;
+    // 1) INSERT sencillo en reports
+    const sqlInsertReport = `
       INSERT INTO reports (
         local_id, fecha, hora, padron, lugar, operador, sentido,
         tipo_incidencia, falta, cantidad, lugar_bajada_final, hora_bajada_final,
         inspector_cod, inspector_name, full_text, created_at, synced_at, sync_status
       ) VALUES (
         NULL,
-        '${sqlEscape(report.fecha)}', '${sqlEscape(report.hora)}', '${sqlEscape(
-          report.padron
-        )}',
-        '${sqlEscape(report.lugar)}', '${sqlEscape(
-          report.operador
-        )}', '${sqlEscape(report.sentido)}',
+        '${sqlEscape(report.fecha)}', '${sqlEscape(report.hora)}', '${sqlEscape(report.padron)}',
+        '${sqlEscape(report.lugar)}', '${sqlEscape(report.operador)}', '${sqlEscape(report.sentido)}',
         '${sqlEscape(report.tipoIncidencia)}', '${sqlEscape(falta)}', ${cantidad},
-        ${
-          report.lugarBajadaFinal
-            ? `'${sqlEscape(report.lugarBajadaFinal)}'`
-            : 'NULL'
-        },
-        ${
-          report.horaBajadaFinal
-            ? `'${sqlEscape(report.horaBajadaFinal)}'`
-            : 'NULL'
-        },
-        ${
-          report.inspectorCod
-            ? `'${sqlEscape(report.inspectorCod)}'`
-            : 'NULL'
-        },
-        ${
-          report.inspectorName
-            ? `'${sqlEscape(report.inspectorName)}'`
-            : 'NULL'
-        },
+        ${report.lugarBajadaFinal ? `'${sqlEscape(report.lugarBajadaFinal)}'` : 'NULL'},
+        ${report.horaBajadaFinal ? `'${sqlEscape(report.horaBajadaFinal)}'` : 'NULL'},
+        '${sqlEscape(report.inspectorCod)}',
+        ${report.inspectorName ? `'${sqlEscape(report.inspectorName)}'` : 'NULL'},
         '${sqlEscape(report.fullText ?? '')}',
         datetime('now'), datetime('now'), 'synced'
       );
-      SELECT last_insert_rowid() AS id;
-      COMMIT;
     `;
 
     const insertReportResp = await axios.post(
       `${SQLITE_CLOUD_BASE_URL}${SQLITE_CLOUD_SQL_ENDPOINT}`,
-      { database: SQLITE_CLOUD_DB_NAME, sql: sqlInsertAndGetId },
+      { database: SQLITE_CLOUD_DB_NAME, sql: sqlInsertReport },
       {
         headers: {
           'Content-Type': 'application/json',
@@ -215,52 +192,47 @@ app.post('/sync-report', async (req, res) => {
       throw new Error('Fallo insert report');
     }
 
-    const data = insertReportResp.data?.data;
-    let reportId = null;
+    // 2) Obtener el último id con SELECT MAX(id)
+    const sqlGetId = `SELECT MAX(id) AS id FROM reports;`;
 
-    // Helper para extraer el id de un resultset Weblite (columns + rows)
-    function extractIdFromResult(result) {
-      if (!result || typeof result !== 'object') return null;
-
-      // Caso típico: { columns: [...], rows: [[id]] }
-      if (Array.isArray(result.rows) && result.rows.length > 0) {
-        const firstRow = result.rows[0];
-        if (Array.isArray(firstRow) && firstRow.length > 0) {
-          return Number(firstRow[0]) || null;
-        }
+    const getIdResp = await axios.post(
+      `${SQLITE_CLOUD_BASE_URL}${SQLITE_CLOUD_SQL_ENDPOINT}`,
+      { database: SQLITE_CLOUD_DB_NAME, sql: sqlGetId },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          Authorization: `Bearer ${SQLITE_CLOUD_AUTH}`,
+        },
       }
+    );
 
-      // Por si devolviera { id: 42 } u otros campos similares
-      if (
-        result.id !== undefined ||
-        result.ID !== undefined ||
-        result.rowId !== undefined ||
-        result.rowid !== undefined
-      ) {
-        return Number(
-          result.id ?? result.ID ?? result.rowId ?? result.rowid
-        ) || null;
-      }
-
-      return null;
+    if (getIdResp.status !== 200) {
+      console.error('Error al obtener MAX(id):', getIdResp.data);
+      throw new Error('No se pudo obtener MAX(id) de reports');
     }
 
-    if (Array.isArray(data)) {
-      const lastResult = data[data.length - 1];
-      reportId = extractIdFromResult(lastResult);
-    } else if (data && typeof data === 'object') {
-      reportId = extractIdFromResult(data);
+    let reportId = null;
+    const idData = getIdResp.data?.data;
+
+    if (Array.isArray(idData) && idData.length > 0) {
+      const row = idData[0];
+      if (row && typeof row === 'object') {
+        reportId = Number(row.id ?? row.ID) || null;
+      }
+    } else if (idData && typeof idData === 'object') {
+      reportId = Number(idData.id ?? idData.ID) || null;
     }
 
     if (!reportId) {
       console.error(
-        'No se obtuvo ID del reporte. Respuesta completa de Weblite:',
-        JSON.stringify(insertReportResp.data, null, 2)
+        'No se obtuvo ID del reporte (MAX(id)). Respuesta:',
+        JSON.stringify(getIdResp.data, null, 2),
       );
       throw new Error('No se obtuvo ID del reporte');
     }
 
-    // 2) Construir SQL para tablas hijas
+    // 3) Construir SQL para tablas hijas
     const sqlLines = [];
 
     // Usuarios
@@ -269,9 +241,7 @@ app.post('/sync-report', async (req, res) => {
         const dinero = Number(user.dinero) || 0;
         sqlLines.push(
           `INSERT INTO report_users (report_id, dinero, lugar_subida, lugar_bajada)
-           VALUES (${reportId}, ${dinero}, '${sqlEscape(
-             user.lugarSubida
-           )}', '${sqlEscape(user.lugarBajada)}');`
+           VALUES (${reportId}, ${dinero}, '${sqlEscape(user.lugarSubida)}', '${sqlEscape(user.lugarBajada)}');`,
         );
       }
     }
@@ -281,7 +251,7 @@ app.post('/sync-report', async (req, res) => {
       report.observaciones.forEach((obs, index) => {
         sqlLines.push(
           `INSERT INTO report_observations (report_id, obs_index, texto)
-           VALUES (${reportId}, ${index}, '${sqlEscape(obs)}');`
+           VALUES (${reportId}, ${index}, '${sqlEscape(obs)}');`,
         );
       });
     }
@@ -292,7 +262,7 @@ app.post('/sync-report', async (req, res) => {
         const monto = Number(raw) || 0;
         sqlLines.push(
           `INSERT INTO report_reintegros (report_id, reintegro_index, monto, raw_text)
-           VALUES (${reportId}, ${idx + 1}, ${monto}, '${sqlEscape(raw)}');`
+           VALUES (${reportId}, ${idx + 1}, ${monto}, '${sqlEscape(raw)}');`,
         );
       });
     }
@@ -304,7 +274,7 @@ app.post('/sync-report', async (req, res) => {
           for (const n of numeros) {
             sqlLines.push(
               `INSERT INTO report_ticket_marked (report_id, tarifa, numero)
-               VALUES (${reportId}, '${sqlEscape(tarifa)}', ${Number(n) || 0});`
+               VALUES (${reportId}, '${sqlEscape(tarifa)}', ${Number(n) || 0});`,
             );
           }
         }
@@ -317,9 +287,7 @@ app.post('/sync-report', async (req, res) => {
         if (rango && typeof rango === 'object') {
           sqlLines.push(
             `INSERT INTO report_ticket_ranges (report_id, tarifa, min_numero, max_numero)
-             VALUES (${reportId}, '${sqlEscape(tarifa)}', ${
-              Number(rango.min) || 0
-            }, ${Number(rango.max) || 0});`
+             VALUES (${reportId}, '${sqlEscape(tarifa)}', ${Number(rango.min) || 0}, ${Number(rango.max) || 0});`,
           );
         }
       }
@@ -361,11 +329,11 @@ app.post('/sync-report', async (req, res) => {
     if (error.response) {
       console.error(
         'Respuesta SQLite Cloud status (sync):',
-        error.response.status
+        error.response.status,
       );
       console.error(
         'Respuesta SQLite Cloud data (sync):',
-        error.response.data
+        error.response.data,
       );
 
       return res.status(500).json({
