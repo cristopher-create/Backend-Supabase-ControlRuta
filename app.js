@@ -58,7 +58,6 @@ app.post('/login', async (req, res) => {
     });
   }
 
-  // Seleccionar idInspector, codeInsp y nombre
   const sqlQuery = `
     SELECT idInspector, codeInsp, nombre
     FROM Inspectores
@@ -86,7 +85,6 @@ app.post('/login', async (req, res) => {
 
     const data = response.data?.data;
 
-    // data puede ser array de filas u objeto único, según Weblite
     let rows = [];
     if (Array.isArray(data)) {
       rows = data;
@@ -98,14 +96,12 @@ app.post('/login', async (req, res) => {
       let inspectorData = {};
 
       if (Array.isArray(rows[0])) {
-        // Caso: array de valores en orden [idInspector, codeInsp, nombre]
         inspectorData = {
           idInspector: rows[0][0],
           codeInsp: rows[0][1],
           nombre: rows[0][2],
         };
       } else {
-        // Caso: objeto { idInspector, codeInsp, nombre }
         inspectorData = rows[0];
       }
 
@@ -156,11 +152,12 @@ app.post('/sync-report', async (req, res) => {
   }
 
   try {
-    // 1) INSERT en tabla reports
     const cantidad = Number(report.cantidad) || 0;
     const falta = report.falta ?? 'N/A';
 
-    const sqlInsertReport = `
+    // 1) INSERT + SELECT last_insert_rowid() en la misma llamada
+    const sqlInsertAndGetId = `
+      BEGIN;
       INSERT INTO reports (
         local_id, fecha, hora, padron, lugar, operador, sentido,
         tipo_incidencia, falta, cantidad, lugar_bajada_final, hora_bajada_final,
@@ -197,11 +194,13 @@ app.post('/sync-report', async (req, res) => {
         '${sqlEscape(report.fullText ?? '')}',
         datetime('now'), datetime('now'), 'synced'
       );
+      SELECT last_insert_rowid() AS id;
+      COMMIT;
     `;
 
     const insertReportResp = await axios.post(
       `${SQLITE_CLOUD_BASE_URL}${SQLITE_CLOUD_SQL_ENDPOINT}`,
-      { database: SQLITE_CLOUD_DB_NAME, sql: sqlInsertReport },
+      { database: SQLITE_CLOUD_DB_NAME, sql: sqlInsertAndGetId },
       {
         headers: {
           'Content-Type': 'application/json',
@@ -216,12 +215,48 @@ app.post('/sync-report', async (req, res) => {
       throw new Error('Fallo insert report');
     }
 
-    // Obtener ID
-    const lastIdRaw = insertReportResp.data?.data?.lastID;
-    const reportId = lastIdRaw ? Number(lastIdRaw) : NaN;
+    const data = insertReportResp.data?.data;
+    let reportId = null;
 
-    if (!reportId || Number.isNaN(reportId)) {
-      console.error('No se obtuvo ID del reporte:', insertReportResp.data);
+    // Helper para extraer el id de un resultset Weblite (columns + rows)
+    function extractIdFromResult(result) {
+      if (!result || typeof result !== 'object') return null;
+
+      // Caso típico: { columns: [...], rows: [[id]] }
+      if (Array.isArray(result.rows) && result.rows.length > 0) {
+        const firstRow = result.rows[0];
+        if (Array.isArray(firstRow) && firstRow.length > 0) {
+          return Number(firstRow[0]) || null;
+        }
+      }
+
+      // Por si devolviera { id: 42 } u otros campos similares
+      if (
+        result.id !== undefined ||
+        result.ID !== undefined ||
+        result.rowId !== undefined ||
+        result.rowid !== undefined
+      ) {
+        return Number(
+          result.id ?? result.ID ?? result.rowId ?? result.rowid
+        ) || null;
+      }
+
+      return null;
+    }
+
+    if (Array.isArray(data)) {
+      const lastResult = data[data.length - 1];
+      reportId = extractIdFromResult(lastResult);
+    } else if (data && typeof data === 'object') {
+      reportId = extractIdFromResult(data);
+    }
+
+    if (!reportId) {
+      console.error(
+        'No se obtuvo ID del reporte. Respuesta completa de Weblite:',
+        JSON.stringify(insertReportResp.data, null, 2)
+      );
       throw new Error('No se obtuvo ID del reporte');
     }
 
