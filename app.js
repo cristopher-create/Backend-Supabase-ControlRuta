@@ -36,7 +36,7 @@ if (!SQLITE_CLOUD_API_KEY) {
   process.exit(1);
 }
 
-// Helper simple para escapar comillas simples en SQL
+// Helper simple para escapar comillas simples en SQL y evitar inyecciones básicas
 function sqlEscape(value) {
   if (value === null || value === undefined) return '';
   return String(value).replace(/'/g, "''");
@@ -44,7 +44,7 @@ function sqlEscape(value) {
 
 // 5. Ruta de prueba
 app.get('/', (req, res) => {
-  res.send('Backend de login y sync funcionando.');
+  res.send('Backend de login, sync y registro funcionando.');
 });
 
 // 6. Endpoint de Login
@@ -58,6 +58,7 @@ app.post('/login', async (req, res) => {
     });
   }
 
+  // Seleccionar idInspector, codeInsp y nombre
   const sqlQuery = `
     SELECT idInspector, codeInsp, nombre
     FROM Inspectores
@@ -96,12 +97,14 @@ app.post('/login', async (req, res) => {
       let inspectorData = {};
 
       if (Array.isArray(rows[0])) {
+        // Caso: array de valores en orden [idInspector, codeInsp, nombre]
         inspectorData = {
           idInspector: rows[0][0],
           codeInsp: rows[0][1],
           nombre: rows[0][2],
         };
       } else {
+        // Caso: objeto { idInspector, codeInsp, nombre }
         inspectorData = rows[0];
       }
 
@@ -114,7 +117,7 @@ app.post('/login', async (req, res) => {
       });
     } else {
       console.log(
-        `Login fallido para idInspector: ${idInspector} - Credenciales incorrectas.`,
+        `Login fallido para idInspector: ${idInspector} - Credenciales incorrectas.`
       );
       return res.status(401).json({
         success: false,
@@ -123,16 +126,6 @@ app.post('/login', async (req, res) => {
     }
   } catch (error) {
     console.error('Error al comunicarse con SQLite Cloud (login):', error.message);
-    if (error.response) {
-      console.error(
-        'Respuesta SQLite Cloud status (login):',
-        error.response.status,
-      );
-      console.error(
-        'Respuesta SQLite Cloud data (login):',
-        error.response.data,
-      );
-    }
     return res.status(500).json({
       success: false,
       message: 'Error de conexión o autenticación.',
@@ -168,7 +161,7 @@ app.post('/sync-report', async (req, res) => {
         '${sqlEscape(report.tipoIncidencia)}', '${sqlEscape(falta)}', ${cantidad},
         ${report.lugarBajadaFinal ? `'${sqlEscape(report.lugarBajadaFinal)}'` : 'NULL'},
         ${report.horaBajadaFinal ? `'${sqlEscape(report.horaBajadaFinal)}'` : 'NULL'},
-        '${sqlEscape(report.inspectorCod)}',
+        ${report.inspectorCod ? `'${sqlEscape(report.inspectorCod)}'` : 'NULL'},
         ${report.inspectorName ? `'${sqlEscape(report.inspectorName)}'` : 'NULL'},
         '${sqlEscape(report.fullText ?? '')}',
         datetime('now'), datetime('now'), 'synced'
@@ -207,28 +200,22 @@ app.post('/sync-report', async (req, res) => {
       }
     );
 
-    if (getIdResp.status !== 200) {
-      console.error('Error al obtener MAX(id):', getIdResp.data);
-      throw new Error('No se pudo obtener MAX(id) de reports');
-    }
-
     let reportId = null;
     const idData = getIdResp.data?.data;
 
     if (Array.isArray(idData) && idData.length > 0) {
       const row = idData[0];
-      if (row && typeof row === 'object') {
-        reportId = Number(row.id ?? row.ID) || null;
+      if (row) {
+        // Puede venir como objeto {id: 123} o array [123]
+        reportId = typeof row === 'object' && !Array.isArray(row) ? (row.id || row.ID) : row[0];
+        reportId = Number(reportId);
       }
     } else if (idData && typeof idData === 'object') {
       reportId = Number(idData.id ?? idData.ID) || null;
     }
 
     if (!reportId) {
-      console.error(
-        'No se obtuvo ID del reporte (MAX(id)). Respuesta:',
-        JSON.stringify(getIdResp.data, null, 2),
-      );
+      console.error('No se obtuvo ID del reporte (MAX(id)).', JSON.stringify(getIdResp.data));
       throw new Error('No se obtuvo ID del reporte');
     }
 
@@ -241,7 +228,7 @@ app.post('/sync-report', async (req, res) => {
         const dinero = Number(user.dinero) || 0;
         sqlLines.push(
           `INSERT INTO report_users (report_id, dinero, lugar_subida, lugar_bajada)
-           VALUES (${reportId}, ${dinero}, '${sqlEscape(user.lugarSubida)}', '${sqlEscape(user.lugarBajada)}');`,
+           VALUES (${reportId}, ${dinero}, '${sqlEscape(user.lugarSubida)}', '${sqlEscape(user.lugarBajada)}');`
         );
       }
     }
@@ -251,7 +238,7 @@ app.post('/sync-report', async (req, res) => {
       report.observaciones.forEach((obs, index) => {
         sqlLines.push(
           `INSERT INTO report_observations (report_id, obs_index, texto)
-           VALUES (${reportId}, ${index}, '${sqlEscape(obs)}');`,
+           VALUES (${reportId}, ${index}, '${sqlEscape(obs)}');`
         );
       });
     }
@@ -262,7 +249,7 @@ app.post('/sync-report', async (req, res) => {
         const monto = Number(raw) || 0;
         sqlLines.push(
           `INSERT INTO report_reintegros (report_id, reintegro_index, monto, raw_text)
-           VALUES (${reportId}, ${idx + 1}, ${monto}, '${sqlEscape(raw)}');`,
+           VALUES (${reportId}, ${idx + 1}, ${monto}, '${sqlEscape(raw)}');`
         );
       });
     }
@@ -274,7 +261,7 @@ app.post('/sync-report', async (req, res) => {
           for (const n of numeros) {
             sqlLines.push(
               `INSERT INTO report_ticket_marked (report_id, tarifa, numero)
-               VALUES (${reportId}, '${sqlEscape(tarifa)}', ${Number(n) || 0});`,
+               VALUES (${reportId}, '${sqlEscape(tarifa)}', ${Number(n) || 0});`
             );
           }
         }
@@ -287,7 +274,7 @@ app.post('/sync-report', async (req, res) => {
         if (rango && typeof rango === 'object') {
           sqlLines.push(
             `INSERT INTO report_ticket_ranges (report_id, tarifa, min_numero, max_numero)
-             VALUES (${reportId}, '${sqlEscape(tarifa)}', ${Number(rango.min) || 0}, ${Number(rango.max) || 0});`,
+             VALUES (${reportId}, '${sqlEscape(tarifa)}', ${Number(rango.min) || 0}, ${Number(rango.max) || 0});`
           );
         }
       }
@@ -296,9 +283,6 @@ app.post('/sync-report', async (req, res) => {
     // Ejecutar inserciones hijas en transacción
     if (sqlLines.length > 0) {
       const fullChildrenSql = `BEGIN;\n${sqlLines.join('\n')}\nCOMMIT;`;
-
-      console.log('SQL hijos (usuarios/obs/reintegros/boletos/rangos):');
-      console.log(fullChildrenSql);
 
       const insertChildrenResp = await axios.post(
         `${SQLITE_CLOUD_BASE_URL}${SQLITE_CLOUD_SQL_ENDPOINT}`,
@@ -313,7 +297,7 @@ app.post('/sync-report', async (req, res) => {
       );
 
       if (insertChildrenResp.status !== 200) {
-        console.error('Error al insertar datos hijos del reporte:', insertChildrenResp.data);
+        console.error('Error al insertar datos hijos:', insertChildrenResp.data);
         throw new Error('Fallo insert hijos');
       }
     }
@@ -325,57 +309,32 @@ app.post('/sync-report', async (req, res) => {
     });
   } catch (error) {
     console.error('Error en /sync-report:', error.message);
-
-    if (error.response) {
-      console.error(
-        'Respuesta SQLite Cloud status (sync):',
-        error.response.status,
-      );
-      console.error(
-        'Respuesta SQLite Cloud data (sync):',
-        error.response.data,
-      );
-
-      return res.status(500).json({
-        success: false,
-        message: 'Error de SQLite Cloud al sincronizar el informe.',
-        dbError: error.response.data,
-      });
-    }
-
-    if (error.request) {
-      console.error('No se recibió respuesta de SQLite Cloud (sync):', error.request);
-      return res.status(500).json({
-        success: false,
-        message: 'No se pudo conectar con el servicio de base de datos.',
-        requestError: error.request,
-      });
-    }
-
-    console.error('Error inesperado en /sync-report:', error.message);
     return res.status(500).json({
       success: false,
-      message: 'Error inesperado al sincronizar el informe.',
+      message: 'Error interno al sincronizar el informe.',
       error: error.message,
     });
   }
 });
 
-// Endpoint para registrar nuevo inspector
+// 8. Endpoint actualizado para registrar nuevo inspector
 app.post('/register', async (req, res) => {
-  const { nombre, apellido, codigo, fechaNac, paradero, contraseña } = req.body;
+  const { nombre, apellido, codigo, fechaNac, paradero, contraseña, idInspector } = req.body;
+
+  // Usar idInspector generado desde Flutter si existe, o fallback a codigo
+  const inspectorId = idInspector && idInspector.trim() !== '' ? idInspector.trim() : codigo;
 
   // Validación de campos obligatorios
-  if (!nombre || !apellido || !codigo || !fechaNac || !paradero || !contraseña) {
+  if (!nombre || !apellido || !codigo || !fechaNac || !paradero || !contraseña || !inspectorId) {
     return res.status(400).json({
       success: false,
       message: 'Faltan datos obligatorios para el registro.',
     });
   }
 
-  // Por si hay algún intento de duplicado (puedes personalizar)
+  // Chequeo de duplicado por idInspector
   const sqlCheck = `
-    SELECT idInspector FROM Inspectores WHERE idInspector = '${sqlEscape(codigo)}';
+    SELECT idInspector FROM Inspectores WHERE idInspector = '${sqlEscape(inspectorId)}';
   `;
 
   try {
@@ -397,11 +356,11 @@ app.post('/register', async (req, res) => {
       });
     }
   } catch (e) {
-    // Si la consulta de duplicado falla, sigue
     console.error('Error en consulta de duplicado (register):', e.message);
+    // Si la consulta de duplicado falla, sigue con la inserción.
   }
 
-  // SQL Insert en Inspectores (sin correo y con contraseña)
+  // SQL Insert en Inspectores (usa el inspectorId generado como PK y codigo como codeInsp)
   const sqlInsert = `
     INSERT INTO Inspectores (
       idInspector,
@@ -413,7 +372,7 @@ app.post('/register', async (req, res) => {
       contraseña,
       fechaNac
     ) VALUES (
-      '${sqlEscape(codigo)}',
+      '${sqlEscape(inspectorId)}',
       '${sqlEscape(codigo)}',
       '${sqlEscape(nombre)}',
       '${sqlEscape(apellido)}',
@@ -461,11 +420,10 @@ app.post('/register', async (req, res) => {
   }
 });
 
-
-// 8. Iniciar el servidor Express
+// 9. Iniciar el servidor Express
 app.listen(port, () => {
   console.log(`Backend escuchando en http://localhost:${port}`);
-  console.log(`Login:           POST http://localhost:${port}/login`);
-  console.log(`Sync report:     POST http://localhost:${port}/sync-report`);
-  console.log(`Register inspector: POST http://localhost:${port}/register`); // <--- NUEVO ENDPOINT
+  console.log(`Login:            POST http://localhost:${port}/login`);
+  console.log(`Sync report:      POST http://localhost:${port}/sync-report`);
+  console.log(`Register insp:    POST http://localhost:${port}/register`);
 });
