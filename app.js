@@ -348,6 +348,7 @@ app.post('/sync-report', async (req, res) => {
       return res.status(500).json({
         success: false,
         message: 'No se pudo conectar con el servicio de base de datos.',
+        requestError: error.request,
       });
     }
 
@@ -360,9 +361,111 @@ app.post('/sync-report', async (req, res) => {
   }
 });
 
+// Endpoint para registrar nuevo inspector
+app.post('/register', async (req, res) => {
+  const { nombre, apellido, codigo, fechaNac, paradero, contraseña } = req.body;
+
+  // Validación de campos obligatorios
+  if (!nombre || !apellido || !codigo || !fechaNac || !paradero || !contraseña) {
+    return res.status(400).json({
+      success: false,
+      message: 'Faltan datos obligatorios para el registro.',
+    });
+  }
+
+  // Por si hay algún intento de duplicado (puedes personalizar)
+  const sqlCheck = `
+    SELECT idInspector FROM Inspectores WHERE idInspector = '${sqlEscape(codigo)}';
+  `;
+
+  try {
+    const checkResp = await axios.post(
+      `${SQLITE_CLOUD_BASE_URL}${SQLITE_CLOUD_SQL_ENDPOINT}`,
+      { database: SQLITE_CLOUD_DB_NAME, sql: sqlCheck },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          Authorization: `Bearer ${SQLITE_CLOUD_AUTH}`,
+        },
+      }
+    );
+    if (checkResp.data?.data && Array.isArray(checkResp.data.data) && checkResp.data.data.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: 'Este ID de inspector ya está registrado.',
+      });
+    }
+  } catch (e) {
+    // Si la consulta de duplicado falla, sigue
+    console.error('Error en consulta de duplicado (register):', e.message);
+  }
+
+  // SQL Insert en Inspectores (sin correo y con contraseña)
+  const sqlInsert = `
+    INSERT INTO Inspectores (
+      idInspector,
+      codeInsp,
+      nombre,
+      apellido,
+      paradero,
+      fechaRegistro,
+      contraseña,
+      fechaNac
+    ) VALUES (
+      '${sqlEscape(codigo)}',
+      '${sqlEscape(codigo)}',
+      '${sqlEscape(nombre)}',
+      '${sqlEscape(apellido)}',
+      '${sqlEscape(paradero)}',
+      datetime('now'),
+      '${sqlEscape(contraseña)}',
+      '${sqlEscape(fechaNac)}'
+    );
+  `;
+
+  try {
+    const insertResp = await axios.post(
+      `${SQLITE_CLOUD_BASE_URL}${SQLITE_CLOUD_SQL_ENDPOINT}`,
+      { database: SQLITE_CLOUD_DB_NAME, sql: sqlInsert },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          Authorization: `Bearer ${SQLITE_CLOUD_AUTH}`,
+        },
+      }
+    );
+
+    if (insertResp.status === 200) {
+      return res.status(201).json({
+        success: true,
+        message: 'Inspector registrado exitosamente.',
+      });
+    } else {
+      console.error('Error al insertar nuevo inspector:', insertResp.data);
+      return res.status(500).json({
+        success: false,
+        message: 'Error en el registro en base de datos.',
+        dbData: insertResp.data,
+      });
+    }
+  } catch (error) {
+    console.error('Error inesperado al registrar inspector:', error.message);
+    return res.status(500).json({
+      success: false,
+      message: 'Error inesperado al registrar inspector.',
+      error: error.message,
+      dbData: error.response?.data,
+    });
+  }
+});
+
+
 // 8. Iniciar el servidor Express
 app.listen(port, () => {
   console.log(`Backend escuchando en http://localhost:${port}`);
-  console.log(`Login:        POST http://localhost:${port}/login`);
-  console.log(`Sync report:  POST http://localhost:${port}/sync-report`);
+  console.log(`Login:           POST http://localhost:${port}/login`);
+  console.log(`Sync report:     POST http://localhost:${port}/sync-report`);
+  console.log(`Register inspector: POST http://localhost:${port}/register`); // <--- NUEVO ENDPOINT
 });
