@@ -420,6 +420,82 @@ app.post('/register', async (req, res) => {
   }
 });
 
+// ==================================================================
+// 🚨 PEGAR ESTO ANTES DE "app.listen"
+// Nuevo Endpoint para que FLUTTER WEB descargue las estadísticas
+// ==================================================================
+
+app.get('/get-reports', async (req, res) => {
+  // 1. La consulta SQL para traer los datos
+  const sqlQuery = `
+    SELECT 
+      id, 
+      fecha, 
+      hora, 
+      padron, 
+      operador, 
+      tipo_incidencia, 
+      falta, 
+      cantidad, 
+      inspector_name, 
+      local_id 
+    FROM reports 
+    ORDER BY created_at DESC 
+    LIMIT 500;
+  `;
+
+  console.log('Solicitud recibida en /get-reports');
+
+  try {
+    // 2. Pedir los datos a SQLite Cloud
+    const response = await axios.post(
+      `${SQLITE_CLOUD_BASE_URL}${SQLITE_CLOUD_SQL_ENDPOINT}`,
+      {
+        database: SQLITE_CLOUD_DB_NAME,
+        sql: sqlQuery,
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          Authorization: `Bearer ${SQLITE_CLOUD_AUTH}`,
+        },
+      }
+    );
+
+    const data = response.data?.data;
+    
+    // 3. Normalizar la respuesta (asegurar que sea un array)
+    let rows = [];
+    if (Array.isArray(data)) {
+        rows = data; 
+    } else if (data && typeof data === 'object') {
+        rows = [data];
+    }
+
+    console.log(`Enviando ${rows.length} reportes al dashboard.`);
+
+    // 4. Responder a Flutter
+    return res.status(200).json({
+      success: true,
+      count: rows.length,
+      reports: rows,
+    });
+
+  } catch (error) {
+    console.error('Error al obtener reportes:', error.message);
+    return res.status(500).json({
+      success: false,
+      message: 'Error al leer la base de datos.',
+      error: error.message,
+    });
+  }
+});
+
+// ==================================================================
+// FIN DEL CÓDIGO NUEVO
+// ==================================================================
+
 // 9. Iniciar el servidor Express
 app.listen(port, () => {
   console.log(`Backend escuchando en http://localhost:${port}`);
