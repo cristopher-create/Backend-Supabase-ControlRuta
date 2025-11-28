@@ -1,5 +1,11 @@
 // app.js
 
+import dns from 'dns';
+if (dns.setDefaultResultOrder) {
+  dns.setDefaultResultOrder('ipv4first');
+}
+
+
 // 1. Importar módulos necesarios
 import express from 'express';
 import bodyParser from 'body-parser';
